@@ -1,9 +1,11 @@
 #!/usr/bin/env python
+from itertools import cycle
 import os
 
 import cv2
 from fire import Fire
 import numpy as np
+from scipy.misc import imresize
 import tensorflow as tf
 
 from adain.image import load_image, prepare_image
@@ -25,6 +27,7 @@ def style_transfer(
         decoder_weights='models/decoder_weights.h5'):
     # Assume that it is either an h5 file or a name of a TensorFlow checkpoint
     decoder_in_h5 = decoder_weights.endswith('.h5')
+    print(type(style_path))
 
     if gpu >= 0:
         os.environ['CUDA_VISIBLE_DEVICES'] = str(gpu)
@@ -60,8 +63,31 @@ def style_transfer(
                           cv2.WINDOW_FULLSCREEN)
 
     with tf.Session() as sess:
-        style_image = load_image(style_path, style_size, crop)
-        style_image = prepare_image(style_image)
+        style_images = []
+        style_images_show = []
+        print(style_path)
+        if not isinstance(style_path, list):
+            style_paths = [style_path]
+        else:
+            style_paths = style_path
+        for style_path in style_paths:
+            style_image = load_image(style_path, style_size, crop)
+            style_image = prepare_image(style_image)
+            style_images_show.append(cv2.cvtColor(
+                imresize(
+                    np.transpose(style_image, (1, 2, 0)),
+                    size=(100, 100)
+                ),
+                cv2.COLOR_BGR2RGB
+            ))
+            style_image = style_image[np.newaxis, ...]
+            style_images.append(style_image)
+        print('lenght', len(style_images))
+        cycler = cycle(style_images)
+        cycler_show = cycle(style_images_show)
+
+        current_style = next(cycler)
+        current_style_show = next(cycler_show)
 
         if decoder_in_h5:
             sess.run(tf.global_variables_initializer())
@@ -80,6 +106,7 @@ def style_transfer(
             # if preserve_color:
             #     style_image = coral(style_image, content_image)
             content_image = prepare_image(content_image)
+            content_image = content_image[np.newaxis, ...]
 
             # TODO Bundle together to one sess.run
             img_out = sess.run(
@@ -90,12 +117,18 @@ def style_transfer(
                 }
             )
 
+            img_out = np.clip(img_out * 255, 0, 255)
             img_out = np.squeeze(img_out).astype(np.uint8)
-            img_out = cv2.cvtColor(img_out, cv2.COLOR_BGR2RGB)
+            img_out = cv2.cvtColor(img_out.transpose(1, 2, 0), cv2.COLOR_BGR2RGB)
             img_out = cv2.flip(img_out, 1)
+            img_out[:100, :100, :] = current_style_show
             cv2.imshow('frame', img_out)
-            if cv2.waitKey(1) & 0xFF == ord('q'):
-                break
+            #if cv2.waitKey(1) & 0xFF == ord('q'):
+            #    break
+            if cv2.waitKey(1) & 0xFF == ord('n'):
+                style_image = next(cycler)
+                current_style_show = next(cycler_show)
+                print(style_image.shape)
 
 
 def _build_graph(vgg_weights, decoder_weights, alpha, data_format):
@@ -114,7 +147,7 @@ def _build_graph(vgg_weights, decoder_weights, alpha, data_format):
             style_feature = vgg_style['conv4_1']
 
     target = adain(content_feature, style_feature, data_format=data_format)
-    weighted_target = target * alpha + (1 - alpha) * content
+    weighted_target = target * alpha + (1 - alpha) * content_feature
 
     if decoder_weights:
         with open_weights(decoder_weights) as w:
